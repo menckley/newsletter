@@ -1,0 +1,7 @@
+# Versions locales (contiennent clés et mots de passe)
+*_local*.py
+
+# Fichiers générés
+apercu_recap.html
+__pycache__/
+.DS_Store
