@@ -295,7 +295,7 @@ COULEURS_THEME = {"conflit": "#b91c1c", "diplomatie": "#1d4ed8", "finance": "#04
 
 
 def build_recap(sujets: list[dict], veille: date, medias: list[str]) -> tuple[str, str, str]:
-    subject = f"🌍 Récap géopolitique – {date_fr(veille)}"
+    subject = f" Récap géopolitique – {date_fr(veille)}"
     cartes, lignes = [], []
     for i, s in enumerate(sujets, 1):
         titre, zone, point, theme = (html.escape(str(s.get(k, "")))
