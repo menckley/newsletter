@@ -1,0 +1,34 @@
+name: Récap géopolitique
+
+on:
+  schedule:
+    - cron: "0 8 * * *"          # tous les jours à 8h00
+      timezone: "Europe/Paris"   # heure de Paris, été comme hiver
+  workflow_dispatch:             # bouton "Run workflow" pour lancer à la main
+
+jobs:
+  recap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt
+
+      - name: Générer et envoyer le récap
+        run: python recap_geopolitique.py
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
