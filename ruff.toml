@@ -1,2 +1,9 @@
+line-length = 110
+
 [lint]
-select = ["E4", "E7", "E9", "F"]
+# E501 (lignes longues) n'est volontairement pas activé : le prompt Mistral et le gabarit HTML
+# contiennent de longues lignes qu'on ne veut pas réécrire.
+select = ["E4", "E7", "E9", "F", "B", "UP", "PLR2004"]
+
+[lint.per-file-ignores]
+"tests/*" = ["PLR2004"]
