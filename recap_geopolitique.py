@@ -23,7 +23,7 @@ import smtplib
 import time
 import traceback
 import unicodedata
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formatdate
@@ -102,7 +102,8 @@ MOTS_EXCLUS = [
 
 # --- Envoi de l'e-mail ---
 SMTP_HOST = os.getenv("SMTP_HOST") or "smtp.gmail.com"
-SMTP_PORT = int(os.getenv("SMTP_PORT") or 465)
+SMTP_PORT_SSL = 465
+SMTP_PORT = int(os.getenv("SMTP_PORT") or SMTP_PORT_SSL)
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM") or SMTP_USER
@@ -132,7 +133,7 @@ def date_article(entry) -> datetime | None:
     struct = entry.get("published_parsed") or entry.get("updated_parsed")
     if not struct:
         return None
-    return datetime(*struct[:6], tzinfo=timezone.utc).astimezone(FUSEAU)
+    return datetime(*struct[:6], tzinfo=UTC).astimezone(FUSEAU)
 
 
 def lire_flux(nom: str, url: str, veille: date) -> list[dict]:
@@ -357,7 +358,7 @@ def send_email(subject: str, html_body: str, texte: str) -> None:
     msg.attach(MIMEText(texte, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     host, port = SMTP_HOST.strip(), int(SMTP_PORT)
-    if port == 465:
+    if port == SMTP_PORT_SSL:
         with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
             smtp.login(SMTP_USER, SMTP_PASSWORD)
             smtp.send_message(msg, EMAIL_FROM, EMAIL_TO)
@@ -407,7 +408,7 @@ def main() -> None:
     try:
         deliver(*message)
     except (smtplib.SMTPException, OSError) as e:
-        raise SystemExit(f"\nÉchec de l'envoi de l'e-mail via {SMTP_HOST}:{SMTP_PORT} → {e!r}")
+        raise SystemExit(f"\nÉchec de l'envoi de l'e-mail via {SMTP_HOST}:{SMTP_PORT} → {e!r}") from e
     if echec:
         # E-mail d'erreur envoyé : on termine en code 1 pour que le run GitHub Actions soit rouge.
         raise SystemExit(1)
