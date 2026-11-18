@@ -42,6 +42,13 @@ MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
 MISTRAL_MODELE = "ministral-8b-2512"
 ATTENTE_MAX_MINUTES = 15   # durée maximale des nouvelles tentatives si Mistral refuse (429, 5xx)
 NB_SUJETS = 3
+# Classement : "mots-cles" (défaut, comportement historique) ou "clusters" (regroupement par événement).
+CLASSEMENT = os.getenv("CLASSEMENT", "mots-cles").strip().lower()
+# Passe de contrôle « chaque affirmation est-elle étayée par les articles ? » (désactivée par défaut).
+VERIFICATION = os.getenv("VERIFICATION", "").strip().lower() in ("1", "true", "oui")
+LONGUEUR_MIN_MOT = 4      # longueur minimale d'un mot pris en compte dans un titre
+SEUIL_JACCARD = 0.35     # similarité minimale entre deux titres pour parler du même événement
+POIDS_SOURCES = {"BCE": 1.5, "Réserve fédérale": 1.5}   # poids d'un média dans le score (1 par défaut)
 
 # --- Flux RSS (nom affiché : adresse du flux) ---
 FLUX_RSS = {
@@ -209,6 +216,61 @@ def filtrer_articles(articles: list[dict]) -> tuple[list[dict], int]:
 
 
 # =============================================================================
+# REGROUPEMENT PAR ÉVÉNEMENT (optionnel : CLASSEMENT=clusters)
+# =============================================================================
+MOTS_VIDES = {"dans", "pour", "avec", "sans", "sous", "plus", "apres", "avant", "entre", "vers",
+              "that", "this", "with", "from", "over", "after", "into", "about", "what", "will",
+              "sont", "cette", "leur", "leurs", "comme", "mais", "tout", "tous"}
+
+
+def mots_titre(titre: str) -> set[str]:
+    """Mots significatifs d'un titre (sans accents, 4 lettres ou plus, hors mots vides)."""
+    return {m for m in re.findall(r"[a-z0-9]+", normaliser(titre)) if len(m) >= LONGUEUR_MIN_MOT and m not in MOTS_VIDES}
+
+
+def jaccard(a: set[str], b: set[str]) -> float:
+    return len(a & b) / len(a | b) if a | b else 0.0
+
+
+def regrouper_articles(articles: list[dict], seuil: float = SEUIL_JACCARD) -> list[list[dict]]:
+    """Regroupe les articles dont les titres se ressemblent (Jaccard sur les mots).
+    Un article rejoint le premier groupe dont le titre représentatif (le premier) lui ressemble."""
+    groupes: list[tuple[set[str], list[dict]]] = []
+    for a in articles:
+        mots = mots_titre(a["titre"])
+        for mots_rep, membres in groupes:
+            if jaccard(mots, mots_rep) >= seuil:
+                membres.append(a)
+                break
+        else:
+            groupes.append((mots, [a]))
+    return [membres for _, membres in groupes]
+
+
+def score_cluster(membres: list[dict]) -> float:
+    """Médias distincts (pondérés) × (1 + bonus mots-clés du meilleur article)."""
+    poids = sum(POIDS_SOURCES.get(src, 1.0) for src in {a["source"] for a in membres})
+    return poids * (1 + max(a["score"] for a in membres) / 10)
+
+
+def classer_par_clusters(retenus: list[dict]) -> list[dict]:
+    """Réordonne les articles par groupe d'événement (meilleur groupe d'abord), renumérote et
+    tronque à MAX_ARTICLES_IA. Ajoute à chaque article « cluster » (n° de groupe) et « nb_medias »."""
+    groupes = regrouper_articles(retenus)
+    groupes.sort(key=score_cluster, reverse=True)
+    resultat = []
+    for n, membres in enumerate(groupes, 1):
+        nb_medias = len({a["source"] for a in membres})
+        for a in sorted(membres, key=lambda x: x["score"], reverse=True):
+            a["cluster"], a["nb_medias"] = n, nb_medias
+            resultat.append(a)
+    resultat = resultat[:MAX_ARTICLES_IA]
+    for i, a in enumerate(resultat, 1):
+        a["id"] = i
+    return resultat
+
+
+# =============================================================================
 # RÉDACTION PAR MISTRAL
 # =============================================================================
 SYSTEM = ("Tu es un analyste en géopolitique et en macro-économie qui rédige chaque matin une "
@@ -218,9 +280,14 @@ SYSTEM = ("Tu es un analyste en géopolitique et en macro-économie qui rédige 
 
 
 def build_prompt(articles: list[dict], veille: date) -> str:
-    liste = "\n".join(
-        f"[{a['id']}]{' [POLITIQUE MONÉTAIRE]' if a['monetaire'] else ''} {a['source']} | "
-        f"{a['titre']} | {a['resume']}" for a in articles)
+    lignes, precedent = [], None
+    for a in articles:
+        if "cluster" in a and a["cluster"] != precedent:
+            precedent = a["cluster"]
+            lignes.append(f"--- Même événement, {a['nb_medias']} média(s) distinct(s) ---")
+        lignes.append(f"[{a['id']}]{' [POLITIQUE MONÉTAIRE]' if a['monetaire'] else ''} {a['source']} | "
+                      f"{a['titre']} | {a['resume']}")
+    liste = "\n".join(lignes)
     return f"""Voici des articles d'actualité publiés le {date_fr(veille)} (numéro, média, titre, résumé), classés du plus pertinent au moins pertinent :
 
 {liste}
@@ -288,6 +355,31 @@ def generer_recap(articles: list[dict], veille: date) -> list[dict]:
     return sujets[:NB_SUJETS]
 
 
+def verifier_sujets(sujets: list[dict], articles: list[dict]) -> list[dict]:
+    """Passe de contrôle : demande à Mistral si chaque point est étayé par les articles cités.
+    Marque « non_etaye » les sujets douteux ; toute erreur de la vérification est ignorée."""
+    par_id = {a["id"]: a for a in articles}
+    blocs = []
+    for n, s in enumerate(sujets):
+        sources = "\n".join(f"- {a['titre']} | {a['resume']}" for i in s.get("articles", [])
+                            if isinstance(i, int) and (a := par_id.get(i)))
+        blocs.append(f"SUJET {n}\nPoint : {s['point']}\nArticles :\n{sources}")
+    prompt = ("Pour chaque sujet, indique si TOUTES les affirmations factuelles du point sont étayées "
+              "par les articles fournis (le contexte général bien établi est toléré, pas les faits "
+              "nouveaux, chiffres ou citations absents des articles).\n\n" + "\n\n".join(blocs) +
+              '\n\nRéponds uniquement en JSON : {"verdicts": [{"sujet": 0, "etaye": true}]}')
+    try:
+        texte = appeler_mistral(prompt)
+        verdicts = json.loads(texte[texte.find("{"):texte.rfind("}") + 1]).get("verdicts", [])
+        for v in verdicts:
+            n = v.get("sujet")
+            if isinstance(n, int) and 0 <= n < len(sujets) and v.get("etaye") is False:
+                sujets[n]["non_etaye"] = True
+    except Exception as e:  # la vérification est facultative : on ne fait jamais échouer le récap
+        print(f"  [!] vérification ignorée : {e}")
+    return sujets
+
+
 # =============================================================================
 # MISE EN FORME DE L'E-MAIL
 # =============================================================================
@@ -306,16 +398,22 @@ def build_recap(sujets: list[dict], veille: date, medias: list[str]) -> tuple[st
                  f'margin-right:6px;">{theme}</span>') if theme else ""
         liens = " · ".join(f'<a href="{html.escape(src["url"])}" style="color:#2563eb;">'
                            f'{html.escape(src["nom"])}</a>' for src in s["sources"])
+        alerte = ('<p style="margin:0 0 10px 0;font-size:12px;color:#b45309;">⚠️ Certaines affirmations '
+                  "ne sont pas clairement étayées par les articles : à vérifier.</p>"
+                  if s.get("non_etaye") else "")
         cartes.append(f"""
 <div style="margin:0 0 20px 0;padding:16px 18px;border:1px solid #e5e7eb;border-radius:8px;">
   <div style="font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;">{badge}{i} · {zone}</div>
   <h3 style="margin:8px 0 10px 0;font-size:17px;">{titre}</h3>
   <p style="margin:0 0 10px 0;line-height:1.55;">{point}</p>
+  {alerte}
   {f'<div style="font-size:13px;color:#555;">Pour aller plus loin : {liens}</div>' if liens else ''}
 </div>""")
         sources_txt = "\n".join(f"   - {src['nom']} : {src['url']}" for src in s["sources"])
+        avertissement = ("\n⚠️ À vérifier : affirmations non clairement étayées par les articles."
+                         if s.get("non_etaye") else "")
         lignes.append(f"{i}. [{s.get('theme', '')}] {s.get('titre', '')} ({s.get('zone', '')})\n"
-                      f"{s.get('point', '')}\n{sources_txt}")
+                      f"{s.get('point', '')}{avertissement}\n{sources_txt}")
 
     pied = (f"Rédigé automatiquement par une IA (Mistral {MISTRAL_MODELE}) à partir des flux RSS de : "
             f"{', '.join(medias)}.")
@@ -392,6 +490,9 @@ def main() -> None:
             print(f"  [!] {e}")
         retenus, ecartes = filtrer_articles(articles)
         print(f"Filtrage : {len(retenus)} articles retenus, {ecartes} écartés")
+        if CLASSEMENT == "clusters":
+            retenus = classer_par_clusters(retenus)
+            print(f"Regroupement : {len({a['cluster'] for a in retenus})} événements")
         if MODE == "sources":
             for a in retenus[:20]:
                 marque = " [MONÉTAIRE]" if a["monetaire"] else ""
@@ -400,6 +501,8 @@ def main() -> None:
         if len(retenus) < MIN_ARTICLES:
             raise ValueError(f"seulement {len(retenus)} articles pertinents trouvés dans les flux RSS")
         sujets = generer_recap(retenus, veille)
+        if VERIFICATION:
+            sujets = verifier_sujets(sujets, retenus)
         medias = [nom for nom, n in compte.items() if n not in (0, "erreur")]
         message = build_recap(sujets, veille, medias)
     except Exception as e:
