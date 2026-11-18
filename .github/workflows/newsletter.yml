@@ -21,7 +21,7 @@ jobs:
           cache: pip
 
       - name: Installer les dépendances
-        run: pip install -r requirements.txt
+        run: pip install --require-hashes -r requirements.txt
 
       - name: Générer et envoyer le récap
         run: python recap_geopolitique.py
