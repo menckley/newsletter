@@ -383,6 +383,7 @@ def deliver(subject: str, html_body: str, texte: str) -> None:
 # =============================================================================
 def main() -> None:
     veille = datetime.now(FUSEAU).date() - timedelta(days=1)
+    echec = False
     try:
         articles, erreurs, compte = collecter_articles(veille)
         print(f"Articles du {veille:%d/%m/%Y} : " + ", ".join(f"{k} {v}" for k, v in compte.items()))
@@ -401,11 +402,15 @@ def main() -> None:
         medias = [nom for nom, n in compte.items() if n not in (0, "erreur")]
         message = build_recap(sujets, veille, medias)
     except Exception as e:
+        echec = True
         message = build_erreur(veille, str(e), traceback.format_exc())
     try:
         deliver(*message)
     except (smtplib.SMTPException, OSError) as e:
         raise SystemExit(f"\nÉchec de l'envoi de l'e-mail via {SMTP_HOST}:{SMTP_PORT} → {e!r}")
+    if echec:
+        # E-mail d'erreur envoyé : on termine en code 1 pour que le run GitHub Actions soit rouge.
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
