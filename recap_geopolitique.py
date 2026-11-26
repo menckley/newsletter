@@ -327,7 +327,7 @@ def appeler_mistral(prompt: str) -> str:
                                    {"role": "user", "content": prompt}]})
             if r.ok:
                 return r.json()["choices"][0]["message"]["content"]
-            if r.status_code in (400, 401, 403, 404, 422):  # erreur définitive : inutile d'insister
+            if r.status_code in (400, 401, 402, 403, 404, 422):  # erreur définitive (402 = facturation) : inutile d'insister
                 raise PermissionError(f"Mistral a refusé la requête (HTTP {r.status_code}) : {r.text[:200]}")
             erreur = f"HTTP {r.status_code} : {r.text[:150]}"
         except requests.RequestException as e:  # coupure réseau, délai dépassé…
@@ -436,7 +436,8 @@ def build_erreur(veille: date, erreur: str, details: str) -> tuple[str, str, str
 <p><b>Erreur :</b> {html.escape(erreur)}</p>
 <pre style="font-size:11px;background:#f3f4f6;padding:10px;white-space:pre-wrap;">{html.escape(details)}</pre>
 <p style="font-size:12px;color:#888;">Causes possibles : flux RSS indisponibles ou modifiés, clé Mistral
-invalide, limite de l'offre gratuite atteinte, indisponibilité prolongée de Mistral.</p>
+invalide, abonnement/budget API Mistral absent (HTTP 402), limite de l'offre gratuite atteinte,
+indisponibilité prolongée de Mistral.</p>
 </body></html>"""
     texte = f"Le récap géopolitique du {date_fr(veille)} n'a pas pu être généré.\n\nErreur : {erreur}\n\n{details}"
     return subject, html_body, texte

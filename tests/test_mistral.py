@@ -88,3 +88,25 @@ def test_prompt_contient_articles_et_marque_monetaire():
     prompt = r.build_prompt(arts, VEILLE)
     assert "[1] [POLITIQUE MONÉTAIRE] Média1 | T1" in prompt
     assert "jeudi 15 janvier 2026" in prompt
+
+
+class _Reponse:
+    def __init__(self, code, texte="x"):
+        self.status_code, self.text, self.ok = code, texte, code < 400
+
+
+def test_http_402_echoue_immediatement_sans_reessai(monkeypatch):
+    appels = []
+    monkeypatch.setattr(r.requests, "post", lambda *a, **k: appels.append(1) or _Reponse(402, "billing"))
+    monkeypatch.setattr(r.time, "sleep", lambda s: pytest.fail("ne doit pas attendre"))
+    with pytest.raises(PermissionError, match="402"):
+        r.appeler_mistral("prompt")
+    assert len(appels) == 1
+
+
+def test_http_503_est_reessaye(monkeypatch):
+    monkeypatch.setattr(r.requests, "post", lambda *a, **k: _Reponse(503))
+    monkeypatch.setattr(r.time, "sleep", lambda s: None)
+    monkeypatch.setattr(r, "ATTENTE_MAX_MINUTES", 0)
+    with pytest.raises(RuntimeError, match="n'a pas répondu"):
+        r.appeler_mistral("prompt")
