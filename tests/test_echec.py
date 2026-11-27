@@ -33,3 +33,11 @@ def test_succes_ne_quitte_pas_en_erreur(monkeypatch):
     monkeypatch.setattr(r, "deliver", lambda *m: envoyes.append(m))
     r.main()
     assert envoyes == [("sujet", "<p>", "t")]
+
+
+def test_echec_journalise_la_cause(monkeypatch, capsys):
+    monkeypatch.setattr(r, "collecter_articles", _boom)
+    monkeypatch.setattr(r, "deliver", lambda *m: None)
+    with pytest.raises(SystemExit):
+        r.main()
+    assert "panne de collecte" in capsys.readouterr().err

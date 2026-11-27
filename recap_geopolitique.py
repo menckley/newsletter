@@ -20,6 +20,7 @@ import os
 import json
 import re
 import smtplib
+import sys
 import time
 import traceback
 import unicodedata
@@ -508,6 +509,8 @@ def main() -> None:
         message = build_recap(sujets, veille, medias)
     except Exception as e:
         echec = True
+        # Journaliser la cause : sans cela, le journal CI ne montre que « code de sortie 1 ».
+        print(f"[ERREUR] {type(e).__name__} : {e}", file=sys.stderr)
         message = build_erreur(veille, str(e), traceback.format_exc())
     try:
         deliver(*message)
